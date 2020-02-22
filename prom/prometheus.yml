@@ -1,0 +1,20 @@
+global:
+  external_labels:
+      monitor: 'traefik-Monitoring'
+
+# A scrape configuration containing exactly one endpoint to scrape:
+# Here it's Prometheus itself.
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries scraped from this config.
+
+   - job_name: 'local_traefik'
+     scrape_interval: 15s
+     scrape_timeout: 10s
+     metrics_path: /metrics
+     scheme: http
+     static_configs:
+     - targets:
+       - traefik_proxy:8082
+     basic_auth:
+       username: @TRAEFIK_USERNAME
+       password: '@TRAEFIK_PASSWORD'
