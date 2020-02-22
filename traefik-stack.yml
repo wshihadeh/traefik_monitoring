@@ -1,0 +1,221 @@
+version: '3.7'
+
+networks:
+  traefik:
+    external: true
+
+volumes:
+  db_data:
+  po_data:
+  gr_data:
+
+services:
+
+  grafana:
+    image: grafana/grafana:6.1.6
+    environment:
+      GF_SECURITY_ADMIN_USER: 'admin'
+      GF_SECURITY_ADMIN_PASSWORD: 'admin'
+      GF_USERS_ALLOW_SIGN_UP: 'true'
+      GF_LOG_LEVEL: 'debug'
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.tags=public
+        - traefik.http.services.grafana.loadbalancer.server.port=3000
+        - traefik.http.routers.grafana.rule=Host(`grafana.wshihadeh.cloud`)
+        - traefik.http.routers.grafana.service=grafana
+        - traefik.http.routers.grafana.entrypoints=web
+        - traefik.docker.network=traefik
+      mode: replicated
+      replicas: 1
+      update_config:
+        delay: 10s
+        failure_action: rollback
+        order: start-first
+        parallelism: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 10
+      resources:
+        reservations:
+          memory: 100M
+        limits:
+          memory: 400M
+    volumes:
+      - gr_data:/var/lib/grafana:rw
+    logging: &logging_config
+      driver: ${LOGGING_DRIVER}
+      options:
+        "max-size": "10m"
+        "max-file": "5"
+    networks:
+      -  traefik
+
+  prometheus:
+    image: wshihadeh/prometheus:v2.16.0
+    environment: &env
+      TRAEFIK_USERNAME: 'traefik'
+      TRAEFIK_PASSWORD: 'traefik2020'
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.tags=public
+        - traefik.http.services.prometheus-backend.loadbalancer.server.port=9090
+        - traefik.http.routers.prometheus-backend.rule=Host(`prometheus.wshihadeh.cloud`)
+        - traefik.http.routers.prometheus-backend.service=prometheus-backend
+        - traefik.http.routers.prometheus-backend.entrypoints=web
+        - traefik.docker.network=traefik
+      mode: replicated
+      replicas: 1
+      update_config:
+        delay: 10s
+        failure_action: rollback
+        order: start-first
+        parallelism: 1
+      resources:
+        reservations:
+          memory: 100M
+        limits:
+          memory: 300M
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 10
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - po_data:/prometheus
+    networks:
+      -  traefik
+
+  proxy:
+    image: traefik:v2.1
+    command:
+      - '--providers.docker=true'
+      - '--entryPoints.web.address=:80'
+      - '--entryPoints.metrics.address=:8082'
+      - '--providers.providersThrottleDuration=2s'
+      - '--providers.docker.watch=true'
+      - '--providers.docker.swarmMode=true'
+      - '--providers.docker.swarmModeRefreshSeconds=15s'
+      - '--providers.docker.exposedbydefault=false'
+      - '--providers.docker.defaultRule=Host("wshihadeh.cloud")'
+      - '--providers.docker.constraints=Label(`traefik.tags`,`public`)'
+      - '--accessLog.bufferingSize=0'
+      - '--api=true'
+      - '--api.dashboard=true'
+      - '--api.insecure=true'
+      - '--ping.entryPoint=web'
+      - '--metrics.prometheus=true'
+      - '--metrics.prometheus.addEntryPointsLabels=true'
+      - '--metrics.prometheus.addServicesLabels=true'
+      - '--metrics.prometheus.manualrouting=true'
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock:ro'
+    ports:
+      - '80:80'
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.tags=public
+        - traefik.docker.network=traefik
+        - traefik.http.middlewares.my-basic-auth.basicauth.users=traefik:$$apr1$$SnHDtk1N$$cpc7xSXXrMVnPYdF01WdC0
+        - traefik.http.services.prometheus.loadbalancer.server.port=8082
+        - traefik.http.routers.prometheus.rule=PathPrefix(`/metrics`)
+        - traefik.http.routers.prometheus.service=prometheus@internal
+        - traefik.http.routers.prometheus.entrypoints=metrics
+        - traefik.http.routers.prometheus.middlewares=my-basic-auth
+        - traefik.http.services.traefik-dashboard.loadbalancer.server.port=8080
+        - traefik.http.routers.traefik-dashboard.rule=Host(`dashboard.wshihadeh.cloud`)
+        - traefik.http.routers.traefik-dashboard.service=traefik-dashboard
+        - traefik.http.routers.traefik-dashboard.entrypoints=web
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+    logging:
+      driver: json-file
+      options:
+        'max-size': '10m'
+        'max-file': '5'
+    networks:
+      - traefik
+
+  mysql:
+    image: mysql:5.7
+    command: mysqld --general-log=1 --general-log-file=/var/log/mysql/general-log.log
+    deploy:
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+    logging:
+      driver: json-file
+      options:
+        'max-size': '10m'
+        'max-file': '5'
+    networks:
+      - traefik
+    volumes:
+      - db_data:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: dummy
+      MYSQL_DATABASE: rails_blog_production
+
+  rails_blog_web:
+    image: wshihadeh/rails_blog:demo-v2-errors
+    command: 'web'
+    deploy:
+      labels:
+        - traefik.enable=true
+        - traefik.tags=public
+        - traefik.http.services.blog.loadbalancer.server.port=8080
+        - traefik.http.routers.blog.rule=Host(`blog.wshihadeh.cloud`) || Host(`wshihadeh.cloud`) || Host(`www.wshihadeh.cloud`)
+        - traefik.http.routers.blog.service=blog
+        - traefik.http.routers.blog.entrypoints=web
+        - traefik.docker.network=traefik
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+      rollback_config:
+        parallelism: 0
+        order: stop-first
+    logging:
+      driver: json-file
+      options:
+        'max-size': '10m'
+        'max-file': '5'
+    networks:
+      - traefik
+    depends_on:
+      - mysql
+    environment:
+      DATABASE_URL: mysql2://root:dummy@mysql/rails_blog_production
+      RAILS_SERVE_STATIC_FILES: 'true'
